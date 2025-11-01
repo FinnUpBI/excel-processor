@@ -1,0 +1,8 @@
+{
+     "name": "excel-processor",
+     "version": "1.0.0",
+     "description": "Procesa archivos Excel y los convierte a JSON",
+     "dependencies": {
+       "xlsx": "^0.18.5"
+     }
+   }
