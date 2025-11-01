@@ -29,7 +29,8 @@ module.exports = async (req, res) => {
     const buffer = Buffer.from(file, 'base64');
     const workbook = XLSX.read(buffer, { 
       type: 'buffer',
-      cellDates: true 
+      cellDates: true,
+      raw: false  // Convertir todo a string
     });
     
     if (workbook.SheetNames.length === 0) {
@@ -42,11 +43,11 @@ module.exports = async (req, res) => {
     const sheetName = workbook.SheetNames[0];
     const sheet = workbook.Sheets[sheetName];
     
-    // CONVERTIR TODO A ARRAY DE ARRAYS (captura TODO)
+    // CONVERTIR TODO A ARRAY DE ARRAYS
     const rawData = XLSX.utils.sheet_to_json(sheet, { 
-      header: 1,  // Array de arrays
-      defval: '', // Valor por defecto para celdas vacías
-      raw: false  // Convertir todo a string para mejor manejo
+      header: 1,
+      defval: '',
+      raw: false
     });
     
     if (rawData.length === 0) {
@@ -56,18 +57,29 @@ module.exports = async (req, res) => {
       });
     }
     
-    // PASO 1: DETECTAR INFORMACIÓN DEL ENCABEZADO
+    // FUNCIÓN AUXILIAR: Limpiar texto
+    const cleanText = (text) => {
+      if (!text) return '';
+      return String(text).trim().replace(/\s+/g, ' ');
+    };
+    
+    // FUNCIÓN AUXILIAR: Verificar si una fila tiene contenido significativo
+    const hasSignificantContent = (row) => {
+      const cleanedCells = row.map(cell => cleanText(cell)).filter(c => c.length > 0);
+      return cleanedCells.length >= 2; // Al menos 2 celdas con contenido
+    };
+    
+    // PASO 1: EXTRAER INFORMACIÓN DEL ENCABEZADO
     const headerInfo = {};
     let productTableStartIndex = -1;
     let productHeaders = [];
     
-    // Extraer información clave del encabezado (primeras filas)
     for (let i = 0; i < Math.min(20, rawData.length); i++) {
       const row = rawData[i];
-      const rowText = row.join(' ').trim();
+      const rowText = row.map(c => cleanText(c)).join(' ');
       
       // Buscar número de pedido
-      if (rowText.toLowerCase().includes('pedido') && rowText.match(/\d+/)) {
+      if (rowText.toLowerCase().includes('pedido')) {
         const match = rowText.match(/pedido\s*n[º°]?\s*:?\s*(\d+)/i);
         if (match) {
           headerInfo.numero_pedido = match[1];
@@ -75,49 +87,58 @@ module.exports = async (req, res) => {
       }
       
       // Buscar fecha
-      if (rowText.toLowerCase().includes('fecha') && rowText.match(/\d{1,2}\/\d{1,2}\/\d{2,4}/)) {
+      if (rowText.toLowerCase().includes('fecha')) {
         const match = rowText.match(/(\d{1,2}\/\d{1,2}\/\d{2,4})/);
         if (match) {
           headerInfo.fecha = match[1];
         }
       }
       
-      // Buscar nombre de cliente (suele estar después de la empresa propia)
-      if (i >= 7 && i <= 11 && rowText.length > 10 && !rowText.toLowerCase().includes('fecha') && !rowText.toLowerCase().includes('pedido')) {
-        if (!headerInfo.cliente && rowText.match(/[A-Z]/)) {
-          headerInfo.cliente = rowText.trim();
-        } else if (!headerInfo.direccion && rowText.length > 5) {
-          headerInfo.direccion = rowText.trim();
+      // Buscar cliente (líneas con texto significativo después de la empresa)
+      if (i >= 7 && i <= 11) {
+        const cleaned = cleanText(rowText);
+        if (cleaned.length > 10 && 
+            !cleaned.toLowerCase().includes('fecha') && 
+            !cleaned.toLowerCase().includes('pedido') &&
+            !cleaned.toLowerCase().includes('grupauto') &&
+            !cleaned.toLowerCase().includes('pág')) {
+          
+          if (!headerInfo.cliente) {
+            headerInfo.cliente = cleaned;
+          } else if (!headerInfo.direccion && cleaned.length > 5) {
+            headerInfo.direccion = cleaned;
+          }
         }
       }
       
-      // Detectar inicio de tabla de productos
-      // Buscar fila con "REFERENCIA" o "DESCRIPCION" o múltiples encabezados
-      const potentialHeaders = row.filter(cell => 
-        cell && String(cell).trim().length > 0
+      // DETECTAR TABLA DE PRODUCTOS
+      // Buscar fila con encabezados típicos
+      const cleanedRow = row.map(c => cleanText(c).toUpperCase());
+      
+      const hasReferencia = cleanedRow.some(h => 
+        h.includes('REFERENCIA') || h.includes('CODIGO') || h.includes('REF')
       );
       
-      if (potentialHeaders.length >= 3) {
-        const hasReferencia = potentialHeaders.some(h => 
-          String(h).toLowerCase().includes('referencia') ||
-          String(h).toLowerCase().includes('codigo') ||
-          String(h).toLowerCase().includes('ref')
-        );
+      const hasDescripcion = cleanedRow.some(h =>
+        h.includes('DESCRIPCION') || h.includes('PRODUCTO') || h.includes('ARTICULO')
+      );
+      
+      const hasCantidad = cleanedRow.some(h =>
+        h.includes('CANTIDAD')
+      );
+      
+      // Si tiene al menos 2 de estos encabezados, es la fila de encabezados
+      if ((hasReferencia && hasDescripcion) || 
+          (hasReferencia && hasCantidad) || 
+          (hasDescripcion && hasCantidad)) {
         
-        const hasDescripcion = potentialHeaders.some(h =>
-          String(h).toLowerCase().includes('descripcion') ||
-          String(h).toLowerCase().includes('producto')
-        );
-        
-        if (hasReferencia || hasDescripcion) {
-          productHeaders = row.map(cell => String(cell).trim()).filter(h => h);
-          productTableStartIndex = i;
-          break;
-        }
+        productHeaders = row.map(c => cleanText(c)).filter(h => h.length > 0);
+        productTableStartIndex = i;
+        break;
       }
     }
     
-    // PASO 2: EXTRAER LÍNEAS DE PRODUCTOS
+    // PASO 2: EXTRAER PRODUCTOS
     const productos = [];
     
     if (productTableStartIndex !== -1 && productHeaders.length > 0) {
@@ -125,42 +146,51 @@ module.exports = async (req, res) => {
       for (let i = productTableStartIndex + 1; i < rawData.length; i++) {
         const row = rawData[i];
         
-        // Saltar filas completamente vacías
-        const nonEmptyCells = row.filter(cell => cell && String(cell).trim() !== '');
-        if (nonEmptyCells.length === 0) continue;
+        // Verificar si tiene contenido significativo
+        if (!hasSignificantContent(row)) continue;
+        
+        // Verificar si es una fila de texto final (notas, etc.)
+        const firstCell = cleanText(row[0]);
+        if (firstCell.length > 50 && firstCell.toLowerCase().includes('indique')) {
+          break; // Fin de la tabla de productos
+        }
         
         // Crear objeto de producto
         const producto = {};
-        let hasRelevantData = false;
+        let hasProductData = false;
         
+        // Mapear datos a encabezados
         productHeaders.forEach((header, index) => {
-          if (header && row[index] !== undefined && String(row[index]).trim() !== '') {
-            producto[header] = row[index];
-            
-            // Verificar si tiene datos relevantes (no solo espacios)
-            if (String(row[index]).trim().length > 0) {
-              hasRelevantData = true;
-            }
+          const value = row[index];
+          const cleanedValue = cleanText(value);
+          
+          if (cleanedValue.length > 0) {
+            producto[header] = value;
+            hasProductData = true;
           }
         });
         
-        if (hasRelevantData) {
+        // Solo añadir si tiene al menos referencia o descripción
+        const hasRef = producto['REFERENCIA'] && cleanText(producto['REFERENCIA']).length > 0;
+        const hasDesc = producto['DESCRIPCION'] && cleanText(producto['DESCRIPCION']).length > 0;
+        
+        if (hasProductData && (hasRef || hasDesc)) {
           productos.push(producto);
         }
       }
     }
     
-    // PASO 3: EXTRAER TODO EL CONTENIDO COMO TEXTO (backup completo)
+    // PASO 3: EXTRAER TODO EL CONTENIDO COMO TEXTO
     let contenidoCompleto = "=== CONTENIDO COMPLETO DEL EXCEL ===\n\n";
     
     rawData.forEach((row, index) => {
-      const rowText = row.filter(cell => cell && String(cell).trim() !== '').join(' | ');
+      const rowText = row.map(c => cleanText(c)).filter(c => c.length > 0).join(' | ');
       if (rowText) {
         contenidoCompleto += `Fila ${index + 1}: ${rowText}\n`;
       }
     });
     
-    // PASO 4: FORMATEAR PARA EL LLM (estructurado y legible)
+    // PASO 4: FORMATEAR PARA EL LLM
     let pedidoTexto = "=== INFORMACIÓN DEL PEDIDO ===\n\n";
     
     // Información del encabezado
@@ -181,8 +211,8 @@ module.exports = async (req, res) => {
         pedidoTexto += `Línea ${index + 1}:\n`;
         
         Object.entries(producto).forEach(([key, value]) => {
-          // Formatear números si es precio/cantidad
           let formattedValue = value;
+          
           if (typeof value === 'number' && 
               (key.toLowerCase().includes('precio') || 
                key.toLowerCase().includes('total') ||
@@ -214,20 +244,10 @@ module.exports = async (req, res) => {
     // RESPUESTA COMPLETA
     return res.status(200).json({
       success: true,
-      
-      // Información estructurada del encabezado
       informacion_pedido: headerInfo,
-      
-      // Líneas de productos estructuradas
       lineas_productos: productos,
-      
-      // Texto formateado para LLM (lo principal)
       pedido_texto: pedidoTexto,
-      
-      // Contenido completo como backup
       contenido_completo: contenidoCompleto,
-      
-      // Metadata
       metadata: {
         total_filas_excel: rawData.length,
         total_lineas_productos: productos.length,
