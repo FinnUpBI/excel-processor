@@ -30,7 +30,7 @@ module.exports = async (req, res) => {
     const workbook = XLSX.read(buffer, { 
       type: 'buffer',
       cellDates: true,
-      raw: false  // Convertir todo a string
+      raw: false
     });
     
     if (workbook.SheetNames.length === 0) {
@@ -43,7 +43,6 @@ module.exports = async (req, res) => {
     const sheetName = workbook.SheetNames[0];
     const sheet = workbook.Sheets[sheetName];
     
-    // CONVERTIR TODO A ARRAY DE ARRAYS
     const rawData = XLSX.utils.sheet_to_json(sheet, { 
       header: 1,
       defval: '',
@@ -66,7 +65,7 @@ module.exports = async (req, res) => {
     // FUNCIÓN AUXILIAR: Verificar si una fila tiene contenido significativo
     const hasSignificantContent = (row) => {
       const cleanedCells = row.map(cell => cleanText(cell)).filter(c => c.length > 0);
-      return cleanedCells.length >= 2; // Al menos 2 celdas con contenido
+      return cleanedCells.length >= 2;
     };
     
     // PASO 1: EXTRAER INFORMACIÓN DEL ENCABEZADO
@@ -94,7 +93,7 @@ module.exports = async (req, res) => {
         }
       }
       
-      // Buscar cliente (líneas con texto significativo después de la empresa)
+      // Buscar cliente
       if (i >= 7 && i <= 11) {
         const cleaned = cleanText(rowText);
         if (cleaned.length > 10 && 
@@ -112,7 +111,6 @@ module.exports = async (req, res) => {
       }
       
       // DETECTAR TABLA DE PRODUCTOS
-      // Buscar fila con encabezados típicos
       const cleanedRow = row.map(c => cleanText(c).toUpperCase());
       
       const hasReferencia = cleanedRow.some(h => 
@@ -127,7 +125,6 @@ module.exports = async (req, res) => {
         h.includes('CANTIDAD')
       );
       
-      // Si tiene al menos 2 de estos encabezados, es la fila de encabezados
       if ((hasReferencia && hasDescripcion) || 
           (hasReferencia && hasCantidad) || 
           (hasDescripcion && hasCantidad)) {
@@ -142,24 +139,19 @@ module.exports = async (req, res) => {
     const productos = [];
     
     if (productTableStartIndex !== -1 && productHeaders.length > 0) {
-      // Procesar filas después de los encabezados
       for (let i = productTableStartIndex + 1; i < rawData.length; i++) {
         const row = rawData[i];
         
-        // Verificar si tiene contenido significativo
         if (!hasSignificantContent(row)) continue;
         
-        // Verificar si es una fila de texto final (notas, etc.)
         const firstCell = cleanText(row[0]);
         if (firstCell.length > 50 && firstCell.toLowerCase().includes('indique')) {
-          break; // Fin de la tabla de productos
+          break;
         }
         
-        // Crear objeto de producto
         const producto = {};
         let hasProductData = false;
         
-        // Mapear datos a encabezados
         productHeaders.forEach((header, index) => {
           const value = row[index];
           const cleanedValue = cleanText(value);
@@ -170,7 +162,6 @@ module.exports = async (req, res) => {
           }
         });
         
-        // Solo añadir si tiene al menos referencia o descripción
         const hasRef = producto['REFERENCIA'] && cleanText(producto['REFERENCIA']).length > 0;
         const hasDesc = producto['DESCRIPCION'] && cleanText(producto['DESCRIPCION']).length > 0;
         
@@ -184,90 +175,4 @@ module.exports = async (req, res) => {
     let contenidoCompleto = "=== CONTENIDO COMPLETO DEL EXCEL ===\n\n";
     
     rawData.forEach((row, index) => {
-      const rowText = row.map(c => cleanText(c)).filter(c => c.length > 0).join(' | ');
-      if (rowText) {
-        contenidoCompleto += `Fila ${index + 1}: ${rowText}\n`;
-      }
-    });
-    
-    // PASO 4: FORMATEAR PARA EL LLM
-    let pedidoTexto = "=== INFORMACIÓN DEL PEDIDO ===\n\n";
-    
-    // Información del encabezado
-    if (Object.keys(headerInfo).length > 0) {
-      pedidoTexto += "--- DATOS DEL PEDIDO ---\n";
-      Object.entries(headerInfo).forEach(([key, value]) => {
-        const label = key.replace(/_/g, ' ').toUpperCase();
-        pedidoTexto += `${label}: ${value}\n`;
-      });
-      pedidoTexto += "\n";
-    }
-    
-    // Líneas de productos
-    if (productos.length > 0) {
-      pedidoTexto += "--- LÍNEAS DE PRODUCTOS ---\n\n";
-      
-      productos.forEach((producto, index) => {
-        pedidoTexto += `Línea ${index + 1}:\n`;
-        
-        Object.entries(producto).forEach(([key, value]) => {
-          let formattedValue = value;
-          
-          if (typeof value === 'number' && 
-              (key.toLowerCase().includes('precio') || 
-               key.toLowerCase().includes('total') ||
-               key.toLowerCase().includes('importe'))) {
-            formattedValue = value.toFixed(2);
-          }
-          
-          pedidoTexto += `  ${key}: ${formattedValue}\n`;
-        });
-        
-        pedidoTexto += "\n";
-      });
-    }
-    
-    // PASO 5: CALCULAR ESTADÍSTICAS
-    let sumaTotal = null;
-    const columnasConTotal = productHeaders.filter(h => 
-      h.toLowerCase().includes('total') || h.toLowerCase().includes('importe')
-    );
-    
-    if (columnasConTotal.length > 0 && productos.length > 0) {
-      const columnaTotal = columnasConTotal[0];
-      sumaTotal = productos.reduce((sum, prod) => {
-        const valor = parseFloat(prod[columnaTotal]) || 0;
-        return sum + valor;
-      }, 0);
-    }
-    
-    // RESPUESTA COMPLETA
-    return res.status(200).json({
-      success: true,
-      informacion_pedido: headerInfo,
-      lineas_productos: productos,
-      pedido_texto: pedidoTexto,
-      contenido_completo: contenidoCompleto,
-      metadata: {
-        total_filas_excel: rawData.length,
-        total_lineas_productos: productos.length,
-        columnas_productos: productHeaders,
-        nombre_hoja: sheetName,
-        formato_archivo: workbook.bookType,
-        fila_inicio_productos: productTableStartIndex + 1,
-        suma_total: sumaTotal ? sumaTotal.toFixed(2) : null,
-        timestamp: new Date().toISOString()
-      }
-    });
-    
-  } catch (error) {
-    console.error('Error procesando Excel:', error);
-    return res.status(500).json({
-      success: false,
-      error: error.message,
-      tipo_error: error.name,
-      stack: error.stack,
-      ayuda: 'Verifica que el archivo sea un Excel válido (.xls o .xlsx)'
-    });
-  }
-};
+      const rowText = ro
