@@ -27,6 +27,15 @@ module.exports = async (req, res) => {
     }
     
     const buffer = Buffer.from(file, 'base64');
+
+// ===== DEBUG: AÑADE ESTAS LÍNEAS =====
+console.log('DEBUG - Tamaño del base64 recibido:', file.length);
+console.log('DEBUG - Primeros 50 chars:', file.substring(0, 50));
+console.log('DEBUG - Últimos 50 chars:', file.substring(file.length - 50));
+console.log('DEBUG - Tamaño del buffer:', buffer.length);
+// ===== FIN DEBUG =====
+
+    
     const workbook = XLSX.read(buffer, { 
       type: 'buffer',
       cellDates: true,
