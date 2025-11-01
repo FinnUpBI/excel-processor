@@ -175,4 +175,88 @@ module.exports = async (req, res) => {
     let contenidoCompleto = "=== CONTENIDO COMPLETO DEL EXCEL ===\n\n";
     
     rawData.forEach((row, index) => {
-      const rowText = ro
+      const rowText = row.map(c => cleanText(c)).filter(c => c.length > 0).join(' | ');
+      if (rowText) {
+        contenidoCompleto += `Fila ${index + 1}: ${rowText}\n`;
+      }
+    });
+    
+    // PASO 4: FORMATEAR PARA EL LLM
+    let pedidoTexto = "=== INFORMACIÓN DEL PEDIDO ===\n\n";
+    
+    if (Object.keys(headerInfo).length > 0) {
+      pedidoTexto += "--- DATOS DEL PEDIDO ---\n";
+      Object.entries(headerInfo).forEach(([key, value]) => {
+        const label = key.replace(/_/g, ' ').toUpperCase();
+        pedidoTexto += `${label}: ${value}\n`;
+      });
+      pedidoTexto += "\n";
+    }
+    
+    if (productos.length > 0) {
+      pedidoTexto += "--- LÍNEAS DE PRODUCTOS ---\n\n";
+      
+      productos.forEach((producto, index) => {
+        pedidoTexto += `Línea ${index + 1}:\n`;
+        
+        Object.entries(producto).forEach(([key, value]) => {
+          let formattedValue = value;
+          
+          if (typeof value === 'number' && 
+              (key.toLowerCase().includes('precio') || 
+               key.toLowerCase().includes('total') ||
+               key.toLowerCase().includes('importe'))) {
+            formattedValue = value.toFixed(2);
+          }
+          
+          pedidoTexto += `  ${key}: ${formattedValue}\n`;
+        });
+        
+        pedidoTexto += "\n";
+      });
+    }
+    
+    // PASO 5: CALCULAR ESTADÍSTICAS
+    let sumaTotal = null;
+    const columnasConTotal = productHeaders.filter(h => 
+      h.toLowerCase().includes('total') || h.toLowerCase().includes('importe')
+    );
+    
+    if (columnasConTotal.length > 0 && productos.length > 0) {
+      const columnaTotal = columnasConTotal[0];
+      sumaTotal = productos.reduce((sum, prod) => {
+        const valor = parseFloat(prod[columnaTotal]) || 0;
+        return sum + valor;
+      }, 0);
+    }
+    
+    // RESPUESTA COMPLETA
+    return res.status(200).json({
+      success: true,
+      informacion_pedido: headerInfo,
+      lineas_productos: productos,
+      pedido_texto: pedidoTexto,
+      contenido_completo: contenidoCompleto,
+      metadata: {
+        total_filas_excel: rawData.length,
+        total_lineas_productos: productos.length,
+        columnas_productos: productHeaders,
+        nombre_hoja: sheetName,
+        formato_archivo: workbook.bookType,
+        fila_inicio_productos: productTableStartIndex + 1,
+        suma_total: sumaTotal ? sumaTotal.toFixed(2) : null,
+        timestamp: new Date().toISOString()
+      }
+    });
+    
+  } catch (error) {
+    console.error('Error procesando Excel:', error);
+    return res.status(500).json({
+      success: false,
+      error: error.message,
+      tipo_error: error.name,
+      stack: error.stack,
+      ayuda: 'Verifica que el archivo sea un Excel válido (.xls o .xlsx)'
+    });
+  }
+};
