@@ -1,17 +1,14 @@
 const XLSX = require('xlsx');
 
 module.exports = async (req, res) => {
-  // Configurar CORS
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
   
-  // Manejar preflight
   if (req.method === 'OPTIONS') {
     return res.status(200).end();
   }
   
-  // Solo POST
   if (req.method !== 'POST') {
     return res.status(405).json({ 
       success: false,
@@ -20,7 +17,6 @@ module.exports = async (req, res) => {
   }
   
   try {
-    // Obtener archivo base64
     const { file } = req.body;
     
     if (!file) {
@@ -30,16 +26,12 @@ module.exports = async (req, res) => {
       });
     }
     
-    // Convertir base64 a Buffer
     const buffer = Buffer.from(file, 'base64');
-    
-    // Leer Excel (autodetecta .xls y .xlsx)
     const workbook = XLSX.read(buffer, { 
       type: 'buffer',
       cellDates: true 
     });
     
-    // Validar que tenga hojas
     if (workbook.SheetNames.length === 0) {
       return res.status(400).json({
         success: false,
@@ -47,84 +39,62 @@ module.exports = async (req, res) => {
       });
     }
     
-    // Obtener primera hoja
     const sheetName = workbook.SheetNames[0];
     const sheet = workbook.Sheets[sheetName];
     
-    // Convertir a JSON
-    const jsonData = XLSX.utils.sheet_to_json(sheet);
+    // CONVERTIR TODO A ARRAY DE ARRAYS (captura TODO)
+    const rawData = XLSX.utils.sheet_to_json(sheet, { 
+      header: 1,  // Array de arrays
+      defval: '', // Valor por defecto para celdas vacías
+      raw: false  // Convertir todo a string para mejor manejo
+    });
     
-    // Validar que tenga datos
-    if (jsonData.length === 0) {
+    if (rawData.length === 0) {
       return res.status(400).json({
         success: false,
-        error: 'La hoja Excel está vacía'
+        error: 'La hoja Excel está completamente vacía'
       });
     }
     
-    // Formatear como texto para LLM
-    let pedidoTexto = "=== INFORMACIÓN DEL PEDIDO ===\n\n";
+    // PASO 1: DETECTAR INFORMACIÓN DEL ENCABEZADO
+    const headerInfo = {};
+    let productTableStartIndex = -1;
+    let productHeaders = [];
     
-    jsonData.forEach((row, index) => {
-      pedidoTexto += `--- Línea ${index + 1} ---\n`;
+    // Extraer información clave del encabezado (primeras filas)
+    for (let i = 0; i < Math.min(20, rawData.length); i++) {
+      const row = rawData[i];
+      const rowText = row.join(' ').trim();
       
-      Object.keys(row).forEach(key => {
-        const value = row[key];
-        
-        // Formatear números con 2 decimales si es precio/total
-        const formattedValue = (typeof value === 'number' && 
-                                (key.toLowerCase().includes('precio') || 
-                                 key.toLowerCase().includes('total') ||
-                                 key.toLowerCase().includes('price')))
-                                ? value.toFixed(2)
-                                : value;
-        
-        pedidoTexto += `  ${key}: ${formattedValue}\n`;
-      });
-      
-      pedidoTexto += "\n";
-    });
-    
-    // Calcular estadísticas
-    const totalLineas = jsonData.length;
-    const columnas = Object.keys(jsonData[0]);
-    
-    // Intentar calcular suma total
-    let sumaTotal = null;
-    const columnaTotal = columnas.find(col => 
-      col.toLowerCase().includes('total')
-    );
-    
-    if (columnaTotal) {
-      sumaTotal = jsonData.reduce((sum, row) => 
-        sum + (parseFloat(row[columnaTotal]) || 0), 0
-      );
-    }
-    
-    // Respuesta final
-    return res.status(200).json({
-      success: true,
-      pedido_estructurado: jsonData,
-      pedido_texto: pedidoTexto,
-      metadata: {
-        total_lineas: totalLineas,
-        columnas: columnas,
-        nombre_hoja: sheetName,
-        formato_archivo: workbook.bookType,
-        suma_total: sumaTotal ? sumaTotal.toFixed(2) : null,
-        timestamp: new Date().toISOString()
+      // Buscar número de pedido
+      if (rowText.toLowerCase().includes('pedido') && rowText.match(/\d+/)) {
+        const match = rowText.match(/pedido\s*n[º°]?\s*:?\s*(\d+)/i);
+        if (match) {
+          headerInfo.numero_pedido = match[1];
+        }
       }
-    });
-    
-  } catch (error) {
-    console.error('Error procesando Excel:', error);
-    return res.status(500).json({
-      success: false,
-      error: error.message,
-      tipo_error: error.name,
-      ayuda: 'Verifica que el archivo sea un Excel válido (.xls o .xlsx)'
-    });
-  }
-};
-
-
+      
+      // Buscar fecha
+      if (rowText.toLowerCase().includes('fecha') && rowText.match(/\d{1,2}\/\d{1,2}\/\d{2,4}/)) {
+        const match = rowText.match(/(\d{1,2}\/\d{1,2}\/\d{2,4})/);
+        if (match) {
+          headerInfo.fecha = match[1];
+        }
+      }
+      
+      // Buscar nombre de cliente (suele estar después de la empresa propia)
+      if (i >= 7 && i <= 11 && rowText.length > 10 && !rowText.toLowerCase().includes('fecha') && !rowText.toLowerCase().includes('pedido')) {
+        if (!headerInfo.cliente && rowText.match(/[A-Z]/)) {
+          headerInfo.cliente = rowText.trim();
+        } else if (!headerInfo.direccion && rowText.length > 5) {
+          headerInfo.direccion = rowText.trim();
+        }
+      }
+      
+      // Detectar inicio de tabla de productos
+      // Buscar fila con "REFERENCIA" o "DESCRIPCION" o múltiples encabezados
+      const potentialHeaders = row.filter(cell => 
+        cell && String(cell).trim().length > 0
+      );
+      
+      if (potentialHeaders.le
